@@ -6,26 +6,28 @@ wpeinit
 cls
 
 rem Locate the FFU folder on the USB drive this script is running from.
-rem %~d0 is the drive the script was launched from; if the script was
-rem copied into the WinPE ramdisk (X:), fall back to scanning all drives.
+rem Checked in order: next to this script, the root of the script's
+rem drive, then every other drive letter. The internal disk (usually C:
+rem in WinPE) and the ramdisk (X:) are checked last so a leftover FFU
+rem folder on the target machine can't shadow the USB stick.
 
-set "USBDRIVE=%~d0"
-if exist "%USBDRIVE%\FFU\" goto USBFOUND
+set "DEPLOYROOT="
 
-set "USBDRIVE="
-for %%D in (C D E F G H I J K L M N O P Q R S T U V W Y Z) do (
-    if not defined USBDRIVE if exist "%%D:\FFU\" set "USBDRIVE=%%D:"
+if exist "%~dp0FFU\" set "DEPLOYROOT=%~dp0FFU"
+
+if not defined DEPLOYROOT if exist "%~d0\FFU\" set "DEPLOYROOT=%~d0\FFU"
+
+if not defined DEPLOYROOT for %%D in (D E F G H I J K L M N O P Q R S T U V W Y Z C X) do (
+    if not defined DEPLOYROOT if exist "%%D:\FFU\" set "DEPLOYROOT=%%D:\FFU"
 )
 
-if not defined USBDRIVE (
-    echo ERROR: Could not find a folder named FFU on any drive.
-    echo Make sure the USB drive contains a FFU folder and try again.
+if not defined DEPLOYROOT (
+    echo ERROR: Could not find a folder named FFU.
+    echo Looked next to this script ^(%~dp0^) and at the root of every
+    echo drive letter. Make sure the USB stick contains a FFU folder.
     pause
     exit /b 1
 )
-
-:USBFOUND
-set "DEPLOYROOT=%USBDRIVE%\FFU"
 
 echo =================================
 echo      ES^&S TS FFU DEPLOYMENT

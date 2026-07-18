@@ -5,11 +5,33 @@ wpeinit
 
 cls
 
-set "DEPLOYROOT=\\EDOE-MDT\ftproot\FFU"
+rem Locate the FFU folder on the USB drive this script is running from.
+rem %~d0 is the drive the script was launched from; if the script was
+rem copied into the WinPE ramdisk (X:), fall back to scanning all drives.
+
+set "USBDRIVE=%~d0"
+if exist "%USBDRIVE%\FFU\" goto USBFOUND
+
+set "USBDRIVE="
+for %%D in (C D E F G H I J K L M N O P Q R S T U V W Y Z) do (
+    if not defined USBDRIVE if exist "%%D:\FFU\" set "USBDRIVE=%%D:"
+)
+
+if not defined USBDRIVE (
+    echo ERROR: Could not find a folder named FFU on any drive.
+    echo Make sure the USB drive contains a FFU folder and try again.
+    pause
+    exit /b 1
+)
+
+:USBFOUND
+set "DEPLOYROOT=%USBDRIVE%\FFU"
 
 echo =================================
 echo      ES^&S TS FFU DEPLOYMENT
 echo =================================
+echo.
+echo Deployment root: %DEPLOYROOT%
 echo.
 
 rem Hardware detection

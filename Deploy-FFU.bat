@@ -97,7 +97,7 @@ call "%DEPLOYROOT%\Scripts\ApplyFFU.bat" "%SELECTEDIMAGE%" %DISKNUMBER%
 
 rem Driver installation
 
-powershell.exe -ExecutionPolicy Bypass -File "%DEPLOYROOT%\Scripts\AddDrivers.ps1" -Model "%MODEL%"
+call "%DEPLOYROOT%\Scripts\AddDrivers.bat" "%MODEL%"
 
 >>"%LOGFILE%" echo Deployment Completed
 

@@ -29,6 +29,24 @@ if not defined DEPLOYROOT (
     exit /b 1
 )
 
+rem Mount the FFU folder as a fixed drive letter so all paths below are
+rem stable regardless of which letter WinPE gave the USB stick.
+
+set "FFUDRIVE="
+for %%D in (Z Y T) do (
+    if not defined FFUDRIVE (
+        subst %%D: "%DEPLOYROOT%" >nul 2>&1
+        if not errorlevel 1 set "FFUDRIVE=%%D:"
+    )
+)
+
+if defined FFUDRIVE (
+    set "DEPLOYROOT=%FFUDRIVE%"
+) else (
+    echo WARNING: Could not mount the FFU folder to a drive letter.
+    echo Continuing with %DEPLOYROOT% directly.
+)
+
 echo =================================
 echo      ES^&S TS FFU DEPLOYMENT
 echo =================================
@@ -102,7 +120,7 @@ if "%choice%"=="1" set "IMAGE=EVS6520.ffu"
 if "%choice%"=="2" set "IMAGE=EVS6521.ffu"
 if "%choice%"=="3" set "IMAGE=EVSEMS6520.ffu"
 if "%choice%"=="4" set "IMAGE=EVSDC6520.ffu"
-if "%choice%"=="5" exit
+if "%choice%"=="5" goto QUIT
 
 if not defined IMAGE goto MENU
 
@@ -149,4 +167,11 @@ echo.
 echo Deployment completed successfully.
 pause
 
+if defined FFUDRIVE subst %FFUDRIVE% /d >nul 2>&1
+
 wpeutil reboot
+exit /b 0
+
+:QUIT
+if defined FFUDRIVE subst %FFUDRIVE% /d >nul 2>&1
+exit

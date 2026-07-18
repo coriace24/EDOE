@@ -93,7 +93,7 @@ set "LOGFILE=%DEPLOYROOT%\Logs\Deploy_%SERIAL%.log"
 
 rem Apply FFU
 
-powershell.exe -ExecutionPolicy Bypass -File "%DEPLOYROOT%\Scripts\ApplyFFU.ps1" -Image "%SELECTEDIMAGE%" -Disk %DISKNUMBER%
+call "%DEPLOYROOT%\Scripts\ApplyFFU.bat" "%SELECTEDIMAGE%" %DISKNUMBER%
 
 rem Driver installation
 

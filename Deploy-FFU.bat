@@ -1,6 +1,8 @@
 @echo off
 setlocal EnableDelayedExpansion
 
+wpeinit
+
 cls
 
 set "DEPLOYROOT=\\EDOE-MDT\ftproot\FFU"
@@ -30,54 +32,64 @@ for /f "usebackq delims=" %%A in (`powershell -NoProfile -ExecutionPolicy Bypass
     )
 )
 
+if defined DISKNUMBER goto DISKOK
+
+rem Fallback: no disk detected automatically - list disks and ask
+
+echo No internal disk detected automatically.
+echo.
+>"%TEMP%\ListDisk.txt" echo list disk
+diskpart /s "%TEMP%\ListDisk.txt"
+echo.
+set /p "DISKNUMBER=Enter target disk number: "
+
 if not defined DISKNUMBER (
-    echo No internal disk detected
+    echo No disk selected
     pause
     exit /b 1
 )
+set "DISKSIZE="
 
-echo Target Disk:
-echo Disk %DISKNUMBER%
-echo %DISKSIZE% GB
+:DISKOK
+echo.
+echo Target Disk: Disk %DISKNUMBER%
+if defined DISKSIZE echo %DISKSIZE% GB
 echo.
 
-rem Select image
+rem Image selection menu
 
-echo Select FFU Image
+:MENU
+set "IMAGE="
+echo ============================================
+echo        FFU DEPLOYMENT MENU
+echo ============================================
+echo.
+echo 1 - EVS 6520
+echo 2 - EVS 6521
+echo 3 - EVS EMS 6520
+echo 4 - EVS DC 6520
+echo 5 - Exit
 echo.
 
-set /a COUNT=0
-for %%F in ("%DEPLOYROOT%\Images\*.ffu") do (
-    set /a COUNT+=1
-    set "IMG_!COUNT!=%%~fF"
-    echo !COUNT! - %%~nxF
-)
+set "choice="
+set /p "choice=Select an image (1-5): "
 
-if %COUNT%==0 (
-    echo No FFU images found in %DEPLOYROOT%\Images
-    pause
-    exit /b 1
-)
+if "%choice%"=="1" set "IMAGE=EVS6520.ffu"
+if "%choice%"=="2" set "IMAGE=EVS6521.ffu"
+if "%choice%"=="3" set "IMAGE=EVSEMS6520.ffu"
+if "%choice%"=="4" set "IMAGE=EVSDC6520.ffu"
+if "%choice%"=="5" exit
 
-echo.
-set "CHOICE="
-set /p "CHOICE=Select image number: "
+if not defined IMAGE goto MENU
 
-set "SELECTEDIMAGE="
-if defined CHOICE set "SELECTEDIMAGE=!IMG_%CHOICE%!"
-
-if not defined SELECTEDIMAGE (
-    echo Invalid Selection
-    exit /b 1
-)
+set "SELECTEDIMAGE=%DEPLOYROOT%\Images\%IMAGE%"
 
 echo.
-echo Selected:
-echo %SELECTEDIMAGE%
-
+echo Selected image: %SELECTEDIMAGE%
 echo.
-echo WARNING
-echo Disk %DISKNUMBER% WILL BE ERASED
+echo WARNING!
+echo This will erase ALL data on Disk %DISKNUMBER%.
+echo.
 pause
 
 rem Start logging
@@ -95,6 +107,14 @@ rem Apply FFU
 
 call "%DEPLOYROOT%\Scripts\ApplyFFU.bat" "%SELECTEDIMAGE%" %DISKNUMBER%
 
+if errorlevel 1 (
+    >>"%LOGFILE%" echo Deployment FAILED
+    echo.
+    echo Deployment FAILED.
+    pause
+    goto MENU
+)
+
 rem Driver installation
 
 call "%DEPLOYROOT%\Scripts\AddDrivers.bat" "%MODEL%"
@@ -102,6 +122,7 @@ call "%DEPLOYROOT%\Scripts\AddDrivers.bat" "%MODEL%"
 >>"%LOGFILE%" echo Deployment Completed
 
 echo.
-echo Deployment Complete
+echo Deployment completed successfully.
+pause
 
 wpeutil reboot

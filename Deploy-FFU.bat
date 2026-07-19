@@ -1,5 +1,5 @@
 @echo off
-setlocal EnableDelayedExpansion
+setlocal
 
 wpeinit
 
@@ -90,7 +90,13 @@ echo.
 echo WARNING!
 echo This will erase ALL data on Disk %DISKNUMBER%.
 echo.
-pause
+set "CONFIRM="
+set /p "CONFIRM=Type YES to continue or press Enter to cancel: "
+if /i not "%CONFIRM%"=="YES" (
+    echo Deployment cancelled.
+    pause
+    goto MENU
+)
 
 rem Start logging
 

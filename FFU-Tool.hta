@@ -1,0 +1,1131 @@
+<html>
+<head>
+<title>FFU Capture / Deploy Tool</title>
+<meta http-equiv="X-UA-Compatible" content="IE=edge" />
+<!--
+    FFU Capture / Deploy Tool - HTA front end.
+
+    Runs the same operations as FFU-Tool.bat (hardware identity, USB
+    mount, FFU capture, FFU deploy) in a window, using only mshta and
+    Windows Script Host.
+
+    Boot image requirements (add with Dism /Add-Package to boot.wim):
+        WinPE-HTA         - mshta.exe and the MSHTML engine
+        WinPE-Scripting   - WScript.Shell and Scripting.FileSystemObject
+
+    No WMI, no .NET and no PowerShell are required. Hardware identity
+    comes from DetectHardware.bat next to this file, so the service tag
+    still resolves on images with no WMI component. Disks and volumes
+    come from parsing diskpart output.
+
+    Launch it with FFU-HTA.bat.
+
+    Written in JScript rather than VBScript so it keeps working in the
+    IE11 document mode, where VBScript is disabled.
+-->
+<HTA:APPLICATION
+    id="oHTA"
+    applicationName="FFUTool"
+    border="thick"
+    caption="yes"
+    contextMenu="no"
+    innerBorder="no"
+    maximizeButton="yes"
+    minimizeButton="yes"
+    navigable="no"
+    scroll="no"
+    selection="no"
+    showInTaskbar="yes"
+    singleInstance="yes"
+    sysMenu="yes"
+    windowState="normal" />
+
+<style type="text/css">
+* { box-sizing: border-box; }
+body {
+    font-family: "Segoe UI", Tahoma, sans-serif;
+    font-size: 12px;
+    background: #f0f0f0;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    cursor: default;
+}
+#header {
+    background: #1f3864;
+    color: #fff;
+    padding: 10px 14px;
+    font-size: 16px;
+    font-weight: bold;
+}
+#wrap { padding: 10px 14px 0 14px; }
+
+/* ---- system information ---- */
+#sysinfo {
+    background: #fff;
+    border: 1px solid #c8c8c8;
+    padding: 8px 10px;
+    margin-bottom: 10px;
+}
+#sysinfo table { width: 100%; border-collapse: collapse; }
+#sysinfo td { padding: 3px 6px; vertical-align: middle; }
+.flabel { color: #555; width: 90px; }
+.fvalue { font-weight: bold; }
+.serial-ok { color: #10621e; }
+.serial-bad { color: #b01818; font-weight: normal; }
+
+/* ---- tabs ---- */
+#tabbar { margin-bottom: -1px; }
+.tab {
+    display: inline-block;
+    padding: 7px 18px;
+    background: #dcdcdc;
+    border: 1px solid #c8c8c8;
+    border-bottom: none;
+    margin-right: 2px;
+    font-weight: bold;
+    color: #444;
+}
+.tab-active { background: #fff; color: #1f3864; }
+.panel {
+    background: #fff;
+    border: 1px solid #c8c8c8;
+    padding: 10px;
+    height: 300px;
+    display: none;
+}
+.panel-active { display: block; }
+
+/* ---- grids ---- */
+.gridbox {
+    border: 1px solid #c8c8c8;
+    overflow: auto;
+    background: #fff;
+}
+table.grid { width: 100%; border-collapse: collapse; }
+table.grid th {
+    background: #eaeaea;
+    text-align: left;
+    padding: 4px 7px;
+    border-bottom: 1px solid #c8c8c8;
+    font-weight: bold;
+    position: relative;
+}
+table.grid td { padding: 4px 7px; border-bottom: 1px solid #eee; }
+table.grid tr.row { cursor: default; }
+table.grid tr.row:hover { background: #eef4fc; }
+table.grid tr.sel, table.grid tr.sel:hover { background: #1f3864; color: #fff; }
+.empty { padding: 10px; color: #888; }
+
+/* ---- controls ---- */
+label.fld { display: inline-block; width: 120px; color: #555; }
+input.txt {
+    border: 1px solid #b4b4b4;
+    padding: 4px 6px;
+    font-family: "Segoe UI", Tahoma, sans-serif;
+    font-size: 12px;
+    width: 360px;
+}
+select.sel { padding: 3px; font-size: 12px; }
+button {
+    font-family: "Segoe UI", Tahoma, sans-serif;
+    font-size: 12px;
+    padding: 6px 12px;
+    border: 1px solid #adadad;
+    background: #e6e6e6;
+    min-width: 110px;
+}
+button:hover { background: #d8e6f8; border-color: #7ba7d7; }
+button[disabled] { color: #a0a0a0; background: #f0f0f0; border-color: #d0d0d0; }
+button[disabled]:hover { background: #f0f0f0; border-color: #d0d0d0; }
+button.danger {
+    background: #c81e1e;
+    color: #fff;
+    border-color: #a01010;
+    font-weight: bold;
+}
+button.danger:hover { background: #e02424; border-color: #a01010; }
+button.danger[disabled] { background: #e8b0b0; color: #f4f4f4; border-color: #d09090; }
+.right { float: right; }
+.spacer { height: 8px; }
+
+/* ---- progress + log ---- */
+#progwrap {
+    margin-top: 10px;
+    border: 1px solid #b4b4b4;
+    background: #fff;
+    height: 20px;
+    padding: 2px;
+}
+#progbar { background: #1f3864; height: 14px; width: 0%; }
+#status { padding: 5px 2px; color: #333; }
+#log {
+    background: #1e1e1e;
+    color: #dcdcdc;
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 11px;
+    height: 150px;
+    overflow: auto;
+    padding: 6px 8px;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    border: 1px solid #000;
+}
+
+/* ---- confirm overlay ---- */
+#overlay {
+    display: none;
+    position: absolute;
+    left: 0; top: 0; width: 100%; height: 100%;
+    background: #000;
+    filter: alpha(opacity=55);
+    opacity: 0.55;
+    z-index: 100;
+}
+#confirmbox {
+    display: none;
+    position: absolute;
+    left: 50%; top: 140px;
+    margin-left: -260px;
+    width: 520px;
+    background: #fff;
+    border: 2px solid #c81e1e;
+    z-index: 101;
+    padding: 0;
+}
+#confirmhead {
+    background: #c81e1e;
+    color: #fff;
+    font-size: 15px;
+    font-weight: bold;
+    padding: 8px 12px;
+}
+#confirmbody { padding: 12px; }
+#confirmdetail {
+    background: #f6f6f6;
+    border: 1px solid #ddd;
+    padding: 8px;
+    margin: 8px 0;
+    font-family: Consolas, "Courier New", monospace;
+    white-space: pre-wrap;
+}
+#confirmfoot { padding: 0 12px 12px 12px; text-align: right; }
+</style>
+</head>
+
+<body>
+<div id="header">FFU Capture / Deploy Tool</div>
+
+<div id="wrap">
+
+<div id="sysinfo">
+  <table>
+    <tr>
+      <td class="flabel">Manufacturer</td><td class="fvalue" id="fManufacturer">...</td>
+      <td class="flabel">Service tag</td><td class="fvalue" id="fSerial">...</td>
+      <td width="120" rowspan="2" align="right">
+        <button id="btnHwRefresh" onclick="RefreshHardware()">Refresh</button>
+      </td>
+    </tr>
+    <tr>
+      <td class="flabel">Model</td><td class="fvalue" id="fModel">...</td>
+      <td class="flabel">BIOS version</td><td class="fvalue" id="fBios">...</td>
+    </tr>
+  </table>
+</div>
+
+<div id="tabbar">
+  <span class="tab tab-active" id="tabDeploy"  onclick="ShowTab('Deploy')">Deploy FFU</span><span
+        class="tab"            id="tabCapture" onclick="ShowTab('Capture')">Capture FFU</span><span
+        class="tab"            id="tabUsb"     onclick="ShowTab('Usb')">USB Drive Mount</span>
+</div>
+
+<!-- ================= Deploy ================= -->
+<div class="panel panel-active" id="panelDeploy">
+  <div>
+    <b>1. Target disk</b> &nbsp;<span style="color:#b01818">(everything on it will be erased)</span>
+    <span class="right"><button id="btnRescanDisks" onclick="RefreshDisks()">Rescan disks</button></span>
+  </div>
+  <div class="gridbox" style="height:105px; margin:6px 0 10px 0;" id="diskbox">
+    <div class="empty">Scanning...</div>
+  </div>
+
+  <div>
+    <b>2. FFU image</b>
+    <span class="right">
+      <button id="btnScanImages" onclick="RefreshImages()">Scan for images</button>
+    </span>
+  </div>
+  <div class="gridbox" style="height:90px; margin:6px 0 8px 0;" id="imagebox">
+    <div class="empty">Scanning...</div>
+  </div>
+
+  <div>
+    <label class="fld">Or full path:</label>
+    <input type="text" class="txt" id="txtImagePath" style="width:430px" />
+    <button id="btnUsePath" onclick="UseTypedImage()">Use this file</button>
+    <span class="right">
+      <button class="danger" id="btnDeploy" onclick="DoDeploy()">Deploy image to disk</button>
+    </span>
+  </div>
+</div>
+
+<!-- ================= Capture ================= -->
+<div class="panel" id="panelCapture">
+  <div>
+    <b>1. Source disk to capture</b>
+    <span class="right"><button id="btnRescanDisks2" onclick="RefreshDisks()">Rescan disks</button></span>
+  </div>
+  <div class="gridbox" style="height:115px; margin:6px 0 10px 0;" id="capdiskbox">
+    <div class="empty">Scanning...</div>
+  </div>
+
+  <div><b>2. Destination</b></div>
+  <div class="spacer"></div>
+  <div><label class="fld">Folder</label><input type="text" class="txt" id="txtCapFolder" /></div>
+  <div class="spacer"></div>
+  <div><label class="fld">File name</label><input type="text" class="txt" id="txtCapName" value="Capture.ffu" /></div>
+  <div class="spacer"></div>
+  <div>
+    <label class="fld">Image name</label><input type="text" class="txt" id="txtCapLabel" value="CAPTURE" />
+    <span class="right"><button id="btnCapture" onclick="DoCapture()">Capture disk to FFU</button></span>
+  </div>
+</div>
+
+<!-- ================= USB mount ================= -->
+<div class="panel" id="panelUsb">
+  <div>
+    <b>Volumes</b>
+    <span class="right"><button id="btnRescanVols" onclick="RefreshVolumes()">Rescan volumes</button></span>
+  </div>
+  <div class="gridbox" style="height:200px; margin:6px 0 10px 0;" id="volbox">
+    <div class="empty">Scanning...</div>
+  </div>
+  <div>
+    <label class="fld">Assign letter</label>
+    <select class="sel" id="selLetter"></select>
+    &nbsp;
+    <button id="btnMount" onclick="DoMount()">Mount volume</button>
+  </div>
+</div>
+
+<div id="progwrap"><div id="progbar"></div></div>
+<div id="status">Starting...</div>
+<div id="log"></div>
+
+</div><!-- /wrap -->
+
+<div id="overlay"></div>
+<div id="confirmbox">
+  <div id="confirmhead">WARNING - data will be erased</div>
+  <div id="confirmbody">
+    <div id="confirmmsg"></div>
+    <div id="confirmdetail"></div>
+    Type <b>YES</b> to continue:
+    <input type="text" class="txt" id="txtConfirm" style="width:120px"
+           onkeyup="ConfirmChanged()" onchange="ConfirmChanged()" />
+  </div>
+  <div id="confirmfoot">
+    <button class="danger" id="btnConfirmOk" onclick="ConfirmAccept()" disabled>Erase and continue</button>
+    <button id="btnConfirmCancel" onclick="ConfirmCancel()">Cancel</button>
+  </div>
+</div>
+
+<script language="JScript">
+// ====================================================================
+// Globals
+// ====================================================================
+var sh, fso, appDir, tempDir, sessionLog;
+var disks = [], volumes = [], images = [];
+var selDisk = -1, selCapDisk = -1, selVol = -1, selImage = -1;
+var typedImage = '';
+
+var job = null;          // running dism job, or null
+var pollTimer = null;
+var pendingConfirm = null;
+
+// ====================================================================
+// Small helpers (kept ES3-safe so older document modes still work)
+// ====================================================================
+function trim(s) {
+    if (s === null || typeof (s) == 'undefined') { return ''; }
+    s = '' + s;
+    return s.replace(/^[\s\u0000]+/, '').replace(/[\s\u0000]+$/, '');
+}
+
+function pad2(n) { return (n < 10 ? '0' : '') + n; }
+
+function nowStamp() {
+    var d = new Date();
+    return pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+}
+
+function fileStamp() {
+    var d = new Date();
+    return '' + d.getFullYear() + pad2(d.getMonth() + 1) + pad2(d.getDate()) + '_' +
+        pad2(d.getHours()) + pad2(d.getMinutes()) + pad2(d.getSeconds());
+}
+
+function htmlEsc(s) {
+    s = '' + s;
+    s = s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return s.replace(/"/g, '&quot;');
+}
+
+function $(id) { return document.getElementById(id); }
+
+function setStatus(t) { $('status').innerHTML = htmlEsc(t); }
+
+function setProgress(p) {
+    if (p < 0) { p = 0; }
+    if (p > 100) { p = 100; }
+    $('progbar').style.width = p + '%';
+}
+
+var logLines = 0;
+function log(text, level) {
+    if (text === null || typeof (text) == 'undefined') { return; }
+    var parts = ('' + text).split(/\r\n|\r|\n/);
+    var stamp = nowStamp();
+    var box = $('log');
+    for (var i = 0; i < parts.length; i++) {
+        var t = trim(parts[i]);
+        if (t.length === 0) { continue; }
+        box.innerHTML += '[' + stamp + '] ' + htmlEsc(t) + '\n';
+        logLines++;
+        try {
+            if (sessionLog) {
+                var f = fso.OpenTextFile(sessionLog, 8, true);
+                f.WriteLine(stamp + ' ' + (level || 'INFO') + ' ' + t);
+                f.Close();
+            }
+        } catch (e) { }
+    }
+    // Keep the pane from growing without bound during a long capture.
+    if (logLines > 600) {
+        var all = box.innerHTML.split('\n');
+        box.innerHTML = all.slice(all.length - 400).join('\n');
+        logLines = 400;
+    }
+    box.scrollTop = box.scrollHeight;
+}
+
+function formatSize(bytes) {
+    if (!bytes || bytes <= 0) { return ''; }
+    var units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    var i = 0;
+    while (bytes >= 1024 && i < units.length - 1) { bytes = bytes / 1024; i++; }
+    return (Math.round(bytes * 10) / 10) + ' ' + units[i];
+}
+
+// ====================================================================
+// Shell / filesystem plumbing
+// ====================================================================
+
+// Everything external runs through a generated .cmd file. That avoids
+// the nested-quoting problems of passing a long command line straight
+// to cmd /c, and lets the batch file capture dism's exit code on the
+// line after it runs.
+function writeCmdFile(lines) {
+    var path = fso.BuildPath(tempDir, 'ffuhta_' + Math.floor(Math.random() * 1000000) + '.cmd');
+    var f = fso.CreateTextFile(path, true);
+    f.WriteLine('@echo off');
+    for (var i = 0; i < lines.length; i++) { f.WriteLine(lines[i]); }
+    f.Close();
+    return path;
+}
+
+function readAllText(path) {
+    try {
+        if (!fso.FileExists(path)) { return ''; }
+        var ts = fso.OpenTextFile(path, 1);
+        var t = ts.AtEndOfStream ? '' : ts.ReadAll();
+        ts.Close();
+        return t;
+    } catch (e) { return ''; }
+}
+
+function tryDelete(path) {
+    try { if (fso.FileExists(path)) { fso.DeleteFile(path, true); } } catch (e) { }
+}
+
+// Runs commands and waits, returning their combined output.
+function runCapture(lines) {
+    var out = fso.BuildPath(tempDir, 'ffuhta_out_' + Math.floor(Math.random() * 1000000) + '.txt');
+    var wrapped = [];
+    for (var i = 0; i < lines.length; i++) {
+        wrapped.push(lines[i] + ' >> "' + out + '" 2>&1');
+    }
+    var cmdFile = writeCmdFile(wrapped);
+    try {
+        sh.Run('"' + cmdFile + '"', 0, true);
+    } catch (e) {
+        log('Failed to run command: ' + e.message, 'ERROR');
+    }
+    var text = readAllText(out);
+    tryDelete(out);
+    tryDelete(cmdFile);
+    return text;
+}
+
+function getAppDir() {
+    var p = '';
+    try {
+        var cl = trim(oHTA.commandLine);
+        if (cl.charAt(0) == '"') {
+            p = cl.substring(1, cl.indexOf('"', 1));
+        } else {
+            var sp = cl.indexOf(' ');
+            p = (sp < 0) ? cl : cl.substring(0, sp);
+        }
+    } catch (e) { }
+    try {
+        if (p && fso.FileExists(p)) { return fso.GetParentFolderName(p); }
+    } catch (e) { }
+    // Fall back to the document URL
+    try {
+        var u = unescape(location.href).replace(/^file:\/+/, '').replace(/\//g, '\\');
+        return fso.GetParentFolderName(u);
+    } catch (e) { }
+    return '.';
+}
+
+// ====================================================================
+// diskpart
+// ====================================================================
+
+function invokeDiskpart(commands) {
+    var script = fso.BuildPath(tempDir, 'ffuhta_dp_' + Math.floor(Math.random() * 1000000) + '.txt');
+    var f = fso.CreateTextFile(script, true);
+    for (var i = 0; i < commands.length; i++) { f.WriteLine(commands[i]); }
+    f.WriteLine('exit');
+    f.Close();
+    var out = runCapture(['diskpart.exe /s "' + script + '"']);
+    tryDelete(script);
+    return out;
+}
+
+// diskpart prints fixed-width tables under a row of dashes. Column
+// positions are taken from that dashes row, so labels containing
+// spaces do not shift the parse and localized headers still work.
+function parseDiskpartTable(text) {
+    var lines = ('' + text).split(/\r\n|\r|\n/);
+    var sep = -1;
+    for (var i = 0; i < lines.length; i++) {
+        if (/^\s*-{3,}(\s+-{3,})+\s*$/.test(lines[i])) { sep = i; break; }
+    }
+    if (sep < 0) { return []; }
+
+    var spans = [];
+    var rx = /-+/g;
+    var m;
+    while ((m = rx.exec(lines[sep])) !== null) {
+        spans.push([m.index, m[0].length]);
+    }
+
+    var rows = [];
+    for (i = sep + 1; i < lines.length; i++) {
+        var line = lines[i];
+        if (trim(line).length === 0) { continue; }
+        if (!/\d/.test(line)) { continue; }
+        var cols = [];
+        for (var c = 0; c < spans.length; c++) {
+            var start = spans[c][0];
+            var len = spans[c][1];
+            if (start >= line.length) { cols.push(''); continue; }
+            // Values sometimes run one character wider than the dashes.
+            var take = Math.min(len + 1, line.length - start);
+            cols.push(trim(line.substr(start, take)));
+        }
+        rows.push(cols);
+    }
+    return rows;
+}
+
+function firstNumber(s) {
+    var m = ('' + s).match(/(\d+)/);
+    return m ? parseInt(m[1], 10) : -1;
+}
+
+// ====================================================================
+// Hardware identity
+// ====================================================================
+
+function RefreshHardware() {
+    setStatus('Reading hardware information...');
+    window.setTimeout(doRefreshHardware, 30);
+}
+
+function doRefreshHardware() {
+    var info = { MANUFACTURER: '', MODEL: '', SERIAL: '', BIOSVER: '' };
+    var detect = fso.BuildPath(appDir, 'DetectHardware.bat');
+
+    if (fso.FileExists(detect)) {
+        var out = runCapture(['call "' + detect + '"']);
+        var lines = out.split(/\r\n|\r|\n/);
+        for (var i = 0; i < lines.length; i++) {
+            var m = trim(lines[i]).match(/^(MANUFACTURER|MODEL|SERIAL|BIOSVER)=(.*)$/);
+            if (m) { info[m[1]] = trim(m[2]); }
+        }
+    } else {
+        log('DetectHardware.bat not found in ' + appDir, 'WARN');
+    }
+
+    var junk = ['to be filled by o.e.m.', 'default string', 'system serial number',
+        'not specified', 'not available', 'none', '0', 'system product name',
+        'system manufacturer', 'oem'];
+    for (var k in info) {
+        if (!info.hasOwnProperty(k)) { continue; }
+        for (var j = 0; j < junk.length; j++) {
+            if (('' + info[k]).toLowerCase() == junk[j]) { info[k] = ''; }
+        }
+    }
+
+    $('fManufacturer').innerHTML = htmlEsc(info.MANUFACTURER || 'Unknown');
+    $('fModel').innerHTML = htmlEsc(info.MODEL || 'Unknown');
+    $('fBios').innerHTML = htmlEsc(info.BIOSVER || 'Unknown');
+
+    var s = $('fSerial');
+    if (info.SERIAL) {
+        s.innerHTML = htmlEsc(info.SERIAL);
+        s.className = 'fvalue serial-ok';
+    } else {
+        s.innerHTML = 'Not available - see log';
+        s.className = 'fvalue serial-bad';
+        log('Service tag could not be read. DetectHardware.bat tries WMI, the raw ' +
+            'SMBIOS table, wmic and the registry; if all of them come back empty the ' +
+            'firmware may have no serial programmed.', 'WARN');
+    }
+    log('Hardware: ' + (info.MANUFACTURER || 'Unknown') + ' / ' + (info.MODEL || 'Unknown') +
+        ' / serial ' + (info.SERIAL || 'not available'));
+    setStatus('Ready');
+}
+
+// ====================================================================
+// Grid rendering
+// ====================================================================
+
+function renderGrid(boxId, headers, widths, rows, selIndex, clickFn, emptyText) {
+    var box = $(boxId);
+    if (!rows.length) {
+        box.innerHTML = '<div class="empty">' + htmlEsc(emptyText) + '</div>';
+        return;
+    }
+    var h = '<table class="grid"><tr>';
+    for (var c = 0; c < headers.length; c++) {
+        h += '<th' + (widths[c] ? ' width="' + widths[c] + '"' : '') + '>' + htmlEsc(headers[c]) + '</th>';
+    }
+    h += '</tr>';
+    for (var r = 0; r < rows.length; r++) {
+        h += '<tr class="row' + (r == selIndex ? ' sel' : '') + '" onclick="' + clickFn + '(' + r + ')">';
+        for (c = 0; c < rows[r].length; c++) {
+            h += '<td>' + htmlEsc(rows[r][c]) + '</td>';
+        }
+        h += '</tr>';
+    }
+    h += '</table>';
+    box.innerHTML = h;
+}
+
+// ====================================================================
+// Disks
+// ====================================================================
+
+function RefreshDisks() {
+    setStatus('Scanning disks...');
+    window.setTimeout(doRefreshDisks, 30);
+}
+
+function doRefreshDisks() {
+    disks = [];
+    var out = invokeDiskpart(['rescan', 'list disk']);
+    var rows = parseDiskpartTable(out);
+    for (var i = 0; i < rows.length; i++) {
+        var cols = rows[i];
+        if (cols.length < 3) { continue; }
+        var num = firstNumber(cols[0]);
+        if (num < 0) { continue; }
+        var style = (cols.length >= 6 && cols[5].indexOf('*') >= 0) ? 'GPT' : 'MBR';
+        disks.push({
+            number: num,
+            status: cols[1],
+            size: cols[2],
+            free: (cols.length >= 4 ? cols[3] : ''),
+            style: style
+        });
+    }
+    selDisk = -1;
+    selCapDisk = -1;
+    drawDisks();
+    log('Found ' + disks.length + ' disk(s)');
+    setStatus('Ready');
+}
+
+function diskRows() {
+    var rows = [];
+    for (var i = 0; i < disks.length; i++) {
+        rows.push(['Disk ' + disks[i].number, disks[i].size, disks[i].free,
+            disks[i].status, disks[i].style]);
+    }
+    return rows;
+}
+
+function drawDisks() {
+    var hdr = ['Disk', 'Size', 'Free', 'Status', 'Style'];
+    var w = ['80', '90', '90', '110', ''];
+    renderGrid('diskbox', hdr, w, diskRows(), selDisk, 'SelectDisk', 'No disks found.');
+    renderGrid('capdiskbox', hdr, w, diskRows(), selCapDisk, 'SelectCapDisk', 'No disks found.');
+}
+
+function SelectDisk(i) { selDisk = i; drawDisks(); }
+function SelectCapDisk(i) { selCapDisk = i; drawDisks(); }
+
+// ====================================================================
+// Volumes
+// ====================================================================
+
+function RefreshVolumes() {
+    setStatus('Scanning volumes...');
+    window.setTimeout(doRefreshVolumes, 30);
+}
+
+function doRefreshVolumes() {
+    volumes = [];
+    var out = invokeDiskpart(['rescan', 'list volume']);
+    var rows = parseDiskpartTable(out);
+    for (var i = 0; i < rows.length; i++) {
+        var cols = rows[i];
+        if (cols.length < 6) { continue; }
+        var num = firstNumber(cols[0]);
+        if (num < 0) { continue; }
+        volumes.push({
+            number: num,
+            letter: cols[1],
+            label: cols[2],
+            fs: cols[3],
+            type: cols[4],
+            size: cols[5],
+            status: (cols.length >= 7 ? cols[6] : '')
+        });
+    }
+    selVol = -1;
+    drawVolumes();
+    fillLetters();
+    log('Found ' + volumes.length + ' volume(s)');
+    setStatus('Ready');
+}
+
+function drawVolumes() {
+    var rows = [];
+    for (var i = 0; i < volumes.length; i++) {
+        var v = volumes[i];
+        rows.push(['Volume ' + v.number, v.letter, v.label, v.fs, v.type, v.size, v.status]);
+    }
+    renderGrid('volbox',
+        ['Volume', 'Ltr', 'Label', 'Fs', 'Type', 'Size', 'Status'],
+        ['80', '40', '170', '70', '100', '90', ''],
+        rows, selVol, 'SelectVol', 'No volumes found.');
+}
+
+function SelectVol(i) { selVol = i; drawVolumes(); }
+
+function fillLetters() {
+    var used = {};
+    for (var i = 0; i < volumes.length; i++) {
+        var l = trim(volumes[i].letter).toUpperCase();
+        if (l.length == 1) { used[l] = true; }
+    }
+    try {
+        var e = new Enumerator(fso.Drives);
+        for (; !e.atEnd(); e.moveNext()) {
+            used[('' + e.item().DriveLetter).toUpperCase()] = true;
+        }
+    } catch (ex) { }
+
+    var sel = $('selLetter');
+    sel.options.length = 0;
+    var alpha = 'DEFGHIJKLMNOPQRSTUVWXYZ';
+    for (i = 0; i < alpha.length; i++) {
+        var c = alpha.charAt(i);
+        if (used[c]) { continue; }
+        sel.options[sel.options.length] = new Option(c + ':', c);
+    }
+    if (!sel.options.length) {
+        sel.options[0] = new Option('(none free)', '');
+    }
+}
+
+function DoMount() {
+    if (selVol < 0) { alert('Select a volume first.'); return; }
+    var sel = $('selLetter');
+    var letter = sel.options.length ? sel.options[sel.selectedIndex].value : '';
+    if (!letter) { alert('No free drive letter is available.'); return; }
+
+    var v = volumes[selVol];
+    setStatus('Mounting volume ' + v.number + ' as ' + letter + ':');
+    var out = invokeDiskpart(['select volume ' + v.number, 'assign letter=' + letter]);
+    log(out);
+
+    // diskpart often exits 0 even when a command failed, so the mounted
+    // path is the real test.
+    var ok = false;
+    try { ok = fso.FolderExists(letter + ':\\'); } catch (e) { ok = false; }
+    if (ok) {
+        log('Volume ' + v.number + ' mounted as ' + letter + ':', 'OK');
+        alert('Volume ' + v.number + ' is now mounted as ' + letter + ':');
+    } else {
+        log('Mount of volume ' + v.number + ' failed', 'ERROR');
+        alert('Mount failed. See the log for the diskpart output.');
+    }
+    RefreshVolumes();
+    RefreshImages();
+}
+
+// ====================================================================
+// Images
+// ====================================================================
+
+function RefreshImages() {
+    setStatus('Scanning for FFU images...');
+    window.setTimeout(doRefreshImages, 30);
+}
+
+function doRefreshImages() {
+    images = [];
+    var subs = ['Images', 'FFU', ''];
+    try {
+        var e = new Enumerator(fso.Drives);
+        for (; !e.atEnd(); e.moveNext()) {
+            var drv = e.item();
+            var ready = false;
+            try { ready = drv.IsReady; } catch (ex) { ready = false; }
+            if (!ready) { continue; }
+            for (var s = 0; s < subs.length; s++) {
+                var path = subs[s] ? fso.BuildPath(drv.DriveLetter + ':\\', subs[s]) : (drv.DriveLetter + ':\\');
+                try {
+                    if (!fso.FolderExists(path)) { continue; }
+                    var fe = new Enumerator(fso.GetFolder(path).Files);
+                    for (; !fe.atEnd(); fe.moveNext()) {
+                        var f = fe.item();
+                        if (!/\.ffu$/i.test(f.Name)) { continue; }
+                        images.push({ name: f.Name, size: formatSize(f.Size), path: f.Path });
+                    }
+                } catch (ex2) { }
+            }
+        }
+    } catch (ex3) {
+        log('Image scan failed: ' + ex3.message, 'ERROR');
+    }
+    selImage = -1;
+    drawImages();
+    log('Found ' + images.length + ' FFU image(s)');
+    setStatus('Ready');
+}
+
+function drawImages() {
+    var rows = [];
+    for (var i = 0; i < images.length; i++) {
+        rows.push([images[i].name, images[i].size, images[i].path]);
+    }
+    renderGrid('imagebox', ['Image', 'Size', 'Location'], ['240', '90', ''],
+        rows, selImage, 'SelectImage', 'No .ffu files found. Mount the USB drive or type a full path below.');
+}
+
+function SelectImage(i) {
+    selImage = i;
+    typedImage = '';
+    $('txtImagePath').value = '';
+    drawImages();
+}
+
+function UseTypedImage() {
+    var p = trim($('txtImagePath').value);
+    if (!p) { alert('Type the full path to an .ffu file first.'); return; }
+    if (!fso.FileExists(p)) { alert('File not found:\n' + p); return; }
+    typedImage = p;
+    selImage = -1;
+    drawImages();
+    log('Using image: ' + p);
+}
+
+function currentImage() {
+    if (typedImage) { return typedImage; }
+    if (selImage >= 0 && selImage < images.length) { return images[selImage].path; }
+    return '';
+}
+
+// ====================================================================
+// Confirmation overlay
+// ====================================================================
+
+function showConfirm(message, detail, onAccept) {
+    $('confirmmsg').innerHTML = htmlEsc(message);
+    $('confirmdetail').innerHTML = htmlEsc(detail);
+    $('txtConfirm').value = '';
+    $('btnConfirmOk').disabled = true;
+    $('overlay').style.display = 'block';
+    $('confirmbox').style.display = 'block';
+    pendingConfirm = onAccept;
+    try { $('txtConfirm').focus(); } catch (e) { }
+}
+
+function ConfirmChanged() {
+    $('btnConfirmOk').disabled = (trim($('txtConfirm').value) !== 'YES');
+}
+
+function ConfirmCancel() {
+    $('overlay').style.display = 'none';
+    $('confirmbox').style.display = 'none';
+    pendingConfirm = null;
+    log('Cancelled by user.');
+}
+
+function ConfirmAccept() {
+    if (trim($('txtConfirm').value) !== 'YES') { return; }
+    $('overlay').style.display = 'none';
+    $('confirmbox').style.display = 'none';
+    var fn = pendingConfirm;
+    pendingConfirm = null;
+    if (fn) { fn(); }
+}
+
+// ====================================================================
+// Running dism without freezing the window
+// ====================================================================
+
+function setBusy(busy) {
+    var ids = ['btnHwRefresh', 'btnRescanDisks', 'btnRescanDisks2', 'btnScanImages',
+        'btnRescanVols', 'btnMount', 'btnDeploy', 'btnCapture', 'btnUsePath'];
+    for (var i = 0; i < ids.length; i++) {
+        var el = $(ids[i]);
+        if (el) { el.disabled = busy; }
+    }
+}
+
+function startDism(args, kind, target) {
+    if (job) { alert('An operation is already running.'); return; }
+
+    var stamp = Math.floor(Math.random() * 1000000);
+    var outFile = fso.BuildPath(tempDir, 'ffuhta_dism_' + stamp + '.txt');
+    var doneFile = fso.BuildPath(tempDir, 'ffuhta_done_' + stamp + '.txt');
+    tryDelete(outFile);
+    tryDelete(doneFile);
+
+    // %errorlevel% on the line after dism is expanded when that line
+    // runs, so it carries dism's real exit code.
+    var cmdFile = writeCmdFile([
+        'dism.exe ' + args + ' > "' + outFile + '" 2>&1',
+        'echo %errorlevel%> "' + doneFile + '"'
+    ]);
+
+    log('Running: dism.exe ' + args);
+    setStatus(kind + ' in progress...');
+    setProgress(0);
+    setBusy(true);
+
+    job = {
+        kind: kind, target: target, outFile: outFile, doneFile: doneFile,
+        cmdFile: cmdFile, pos: 0, lastPct: -1
+    };
+
+    try {
+        sh.Run('"' + cmdFile + '"', 0, false);
+    } catch (e) {
+        log('Failed to start dism: ' + e.message, 'ERROR');
+        setStatus('Failed to start dism');
+        setBusy(false);
+        job = null;
+        return;
+    }
+    pollTimer = window.setInterval(pollJob, 500);
+}
+
+function readNew() {
+    // Reads only what dism appended since the last tick. The file is
+    // still open by cmd, so failures here are normal and just skipped.
+    try {
+        if (!fso.FileExists(job.outFile)) { return ''; }
+        var ts = fso.OpenTextFile(job.outFile, 1);
+        if (job.pos > 0) {
+            try { ts.Skip(job.pos); } catch (e1) { ts.Close(); return ''; }
+        }
+        var t = ts.AtEndOfStream ? '' : ts.ReadAll();
+        ts.Close();
+        job.pos += t.length;
+        return t;
+    } catch (e) { return ''; }
+}
+
+function pollJob() {
+    if (!job) { return; }
+
+    var text = readNew();
+    if (text) {
+        var lines = text.split(/\r\n|\r|\n/);
+        for (var i = 0; i < lines.length; i++) {
+            var t = trim(lines[i]);
+            if (!t.length) { continue; }
+            var m = t.match(/(\d+(?:[.,]\d+)?)%/);
+            if (m) {
+                var p = Math.floor(parseFloat(m[1].replace(',', '.')));
+                if (p >= 0 && p <= 100) {
+                    setProgress(p);
+                    if (p != job.lastPct) {
+                        job.lastPct = p;
+                        setStatus(job.kind + ' in progress... ' + p + '%');
+                    }
+                }
+                // Progress bars redraw constantly; keep them out of the log.
+                if (/^[\[\]=\s\d.,%]+$/.test(t)) { continue; }
+            }
+            log(t);
+        }
+    }
+
+    if (!fso.FileExists(job.doneFile)) { return; }
+    var codeText = trim(readAllText(job.doneFile));
+    if (!codeText.length) { return; }   // still being written
+
+    window.clearInterval(pollTimer);
+    pollTimer = null;
+
+    var tail = readNew();
+    if (tail) {
+        var tl = tail.split(/\r\n|\r|\n/);
+        for (var k = 0; k < tl.length; k++) {
+            var tt = trim(tl[k]);
+            if (!tt.length) { continue; }
+            if (/^[\[\]=\s\d.,%]+$/.test(tt)) { continue; }
+            log(tt);
+        }
+    }
+
+    var code = parseInt(codeText, 10);
+    if (isNaN(code)) { code = -1; }
+
+    var kind = job.kind, target = job.target;
+    tryDelete(job.outFile);
+    tryDelete(job.doneFile);
+    tryDelete(job.cmdFile);
+    job = null;
+    setBusy(false);
+
+    if (code === 0) {
+        setProgress(100);
+        log(kind + ' completed successfully (' + target + ')', 'OK');
+        setStatus(kind + ' completed successfully');
+        alert(kind + ' completed successfully.');
+    } else {
+        log(kind + ' FAILED with exit code ' + code, 'ERROR');
+        setStatus(kind + ' FAILED (exit code ' + code + ')');
+        alert(kind + ' FAILED.\n\ndism exit code: ' + code + '\nSee the log for details.');
+    }
+}
+
+// ====================================================================
+// Actions
+// ====================================================================
+
+function DoDeploy() {
+    if (selDisk < 0) { alert('Select a target disk first.'); return; }
+    var img = currentImage();
+    if (!img) { alert('Select an FFU image, or type a full path and press "Use this file".'); return; }
+    if (!fso.FileExists(img)) { alert('Image not found:\n' + img); return; }
+
+    var d = disks[selDisk];
+    var detail = 'Disk ' + d.number + '   ' + d.size + '   ' + d.status + '\n' +
+        'Image: ' + img;
+
+    showConfirm('Everything on disk ' + d.number + ' will be erased.', detail, function () {
+        startDism('/Apply-FFU /ImageFile:"' + img + '" /ApplyDrive:\\\\.\\PhysicalDrive' + d.number,
+            'Deployment', 'disk ' + d.number);
+    });
+}
+
+function DoCapture() {
+    if (selCapDisk < 0) { alert('Select a source disk first.'); return; }
+    var folder = trim($('txtCapFolder').value);
+    var name = trim($('txtCapName').value);
+    var label = trim($('txtCapLabel').value);
+
+    if (!folder) { alert('Enter a destination folder.'); return; }
+    if (!fso.FolderExists(folder)) { alert('Destination folder not found:\n' + folder); return; }
+    if (!name) { alert('Enter a file name.'); return; }
+    if (!/\.ffu$/i.test(name)) { name += '.ffu'; }
+    if (!label) { label = 'CAPTURE'; }
+
+    var target = fso.BuildPath(folder, name);
+    if (fso.FileExists(target)) {
+        if (!confirm(target + '\n\nalready exists. Overwrite it?')) { return; }
+        try { fso.DeleteFile(target, true); }
+        catch (e) { alert('Could not delete the existing file:\n' + e.message); return; }
+    }
+
+    var d = disks[selCapDisk];
+    startDism('/Capture-FFU /ImageFile:"' + target + '" /CaptureDrive:\\\\.\\PhysicalDrive' + d.number +
+        ' /Name:"' + label + '"', 'Capture', target);
+}
+
+// ====================================================================
+// Tabs
+// ====================================================================
+
+function ShowTab(which) {
+    var names = ['Deploy', 'Capture', 'Usb'];
+    for (var i = 0; i < names.length; i++) {
+        $('panel' + names[i]).className = (names[i] == which) ? 'panel panel-active' : 'panel';
+        $('tab' + names[i]).className = (names[i] == which) ? 'tab tab-active' : 'tab';
+    }
+}
+
+// ====================================================================
+// Startup
+// ====================================================================
+
+function boot() {
+    try {
+        sh = new ActiveXObject('WScript.Shell');
+        fso = new ActiveXObject('Scripting.FileSystemObject');
+    } catch (e) {
+        document.body.innerHTML =
+            '<div style="padding:30px;font-family:Segoe UI">' +
+            '<h2>Windows Script Host is not available</h2>' +
+            '<p>This tool needs <b>WinPE-Scripting</b> in the boot image ' +
+            '(WScript.Shell and Scripting.FileSystemObject).</p>' +
+            '<p>Add WinPE-HTA and WinPE-Scripting to boot.wim, or run ' +
+            'FFU-Tool.bat instead.</p><p>' + htmlEsc(e.message) + '</p></div>';
+        return;
+    }
+
+    try { tempDir = fso.GetSpecialFolder(2).Path; } catch (e2) { tempDir = 'X:\\Windows\\Temp'; }
+    appDir = getAppDir();
+    sessionLog = fso.BuildPath(tempDir, 'FFU-HTA_' + fileStamp() + '.log');
+
+    try {
+        window.resizeTo(1000, 780);
+        window.moveTo(Math.max(0, (screen.availWidth - 1000) / 2),
+                      Math.max(0, (screen.availHeight - 780) / 2));
+    } catch (e3) { }
+
+    log('FFU HTA started. Folder: ' + appDir);
+    log('Session log: ' + sessionLog);
+
+    RefreshHardware();
+    window.setTimeout(function () {
+        doRefreshDisks();
+        doRefreshVolumes();
+        doRefreshImages();
+        setStatus('Ready');
+    }, 120);
+}
+
+window.onload = boot;
+
+window.onbeforeunload = function () {
+    if (job) {
+        return 'An operation is still running. Closing now may leave the disk in an unusable state.';
+    }
+};
+</script>
+</body>
+</html>

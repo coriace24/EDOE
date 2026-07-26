@@ -1,41 +1,53 @@
 @echo off
+rem ==================================================================
+rem DetectHardware.bat - prints hardware identity as KEY=VALUE lines
+rem
+rem   MANUFACTURER=Dell Inc.
+rem   MODEL=OptiPlex 7010
+rem   SERIAL=ABC1234
+rem   BIOSVER=1.23.0
+rem
+rem Only keys that were resolved are printed. Consume it with:
+rem   for /f "usebackq tokens=1,* delims==" %%A in (`DetectHardware.bat`) do set "%%A=%%B"
+rem
+rem Detection order (first one that yields a serial wins):
+rem   1. WMI via cscript          - needs WinPE-WMI
+rem   2. raw SMBIOS table via cscript
+rem   3. CIM via PowerShell       - needs WinPE-WMI + WinPE-PowerShell
+rem   4. raw SMBIOS table via PowerShell
+rem   5. wmic                     - removed on recent builds
+rem   6. registry BIOS key        - rarely carries a serial
+rem
+rem The raw SMBIOS table (HKLM\SYSTEM\CurrentControlSet\Services\
+rem mssmbios\Data\SMBiosData) is populated by the mssmbios driver on
+rem every PC, so the service tag is readable even in a bare WinPE with
+rem no WMI component present.
+rem ==================================================================
 setlocal
-
-wpeinit
-
-cls
-echo =================================
-echo       SYSTEM INFORMATION
-echo =================================
-echo.
 
 set "BIOSVER="
 set "SERIAL="
 set "MODEL="
 set "MANUFACTURER="
 
-rem Method 1: cscript - WMI first, then the raw SMBIOS table from the
-rem registry (mssmbios), which works even without the WinPE-WMI component
 where cscript >nul 2>&1
 if errorlevel 1 goto TRYPS
-set "VBS=%TEMP%\getsysinfo.vbs"
+set "VBS=%TEMP%\dethw_%RANDOM%.vbs"
 call :WRITEVBS "%VBS%"
 for /f "usebackq tokens=1,* delims==" %%A in (`cscript //nologo "%VBS%" 2^>nul`) do set "%%A=%%B"
 del "%VBS%" >nul 2>&1
-if defined SERIAL goto SHOW
+if defined SERIAL goto EMIT
 
 :TRYPS
-rem Method 2: PowerShell - CIM query, then the same raw SMBIOS parse
 where powershell >nul 2>&1
 if errorlevel 1 goto TRYWMIC
-set "PS1=%TEMP%\getsysinfo.ps1"
+set "PS1=%TEMP%\dethw_%RANDOM%.ps1"
 call :WRITEPS1 "%PS1%"
 for /f "usebackq tokens=1,* delims==" %%A in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%PS1%" 2^>nul`) do set "%%A=%%B"
 del "%PS1%" >nul 2>&1
-if defined SERIAL goto SHOW
+if defined SERIAL goto EMIT
 
 :TRYWMIC
-rem Method 3: wmic (still present on older builds)
 where wmic >nul 2>&1
 if errorlevel 1 goto REGONLY
 for /f "tokens=1,* delims==" %%A in ('wmic bios get serialnumber /value 2^>nul ^| find "="') do for /f "delims=" %%C in ("%%B") do set "SERIAL=%%C"
@@ -46,11 +58,11 @@ if /i "%SERIAL%"=="To be filled by O.E.M." set "SERIAL="
 if /i "%SERIAL%"=="Default string" set "SERIAL="
 if /i "%SERIAL%"=="System Serial Number" set "SERIAL="
 if "%SERIAL%"=="0" set "SERIAL="
-if defined SERIAL goto SHOW
+if defined SERIAL goto EMIT
 
 :REGONLY
-rem Last resort: registry BIOS key. Most firmware does not publish a
-rem serial here, but some OEMs do - try it before giving up.
+rem Most firmware does not publish a serial here, but some OEMs do -
+rem try it before giving up.
 for /f "tokens=2,*" %%A in ('reg query "HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemSerialNumber 2^>nul ^| find "REG_"') do set "SERIAL=%%B"
 if not defined SERIAL for /f "tokens=2,*" %%A in ('reg query "HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v BaseBoardSerialNumber 2^>nul ^| find "REG_"') do set "SERIAL=%%B"
 if /i "%SERIAL%"=="To be filled by O.E.M." set "SERIAL="
@@ -60,236 +72,16 @@ if not defined MANUFACTURER for /f "tokens=2,*" %%A in ('reg query "HKLM\HARDWAR
 if not defined MODEL for /f "tokens=2,*" %%A in ('reg query "HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemProductName 2^>nul ^| find "REG_"') do set "MODEL=%%B"
 if not defined BIOSVER for /f "tokens=2,*" %%A in ('reg query "HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v BIOSVersion 2^>nul ^| find "REG_"') do set "BIOSVER=%%B"
 
-:SHOW
-if not defined SERIAL set "SERIAL=Not available"
-if not defined MANUFACTURER set "MANUFACTURER=Unknown"
-if not defined MODEL set "MODEL=Unknown"
-if not defined BIOSVER set "BIOSVER=Unknown"
-echo Manufacturer : %MANUFACTURER%
-echo Model        : %MODEL%
-echo Serial       : %SERIAL%
-echo BIOS Version : %BIOSVER%
-echo.
-pause
-
-:MENU
-cls
-echo =================================
-echo    FFU CAPTURE / DEPLOY TOOL
-echo =================================
-echo.
-echo 1. USB Drive Mount
-echo 2. Capture FFU Image
-echo 3. Deploy FFU Image
-echo 4. Exit
-echo.
-set "CHOICE="
-set /p "CHOICE=Select an option (1-4): "
-if "%CHOICE%"=="1" goto USBMOUNT
-if "%CHOICE%"=="2" goto CAPTURE
-if "%CHOICE%"=="3" goto DEPLOY
-if "%CHOICE%"=="4" exit /b 0
-echo Invalid selection.
-pause
-goto MENU
-
-:USBMOUNT
-cls
-echo ==========================================
-echo          USB Drive Mount Utility
-echo ==========================================
-echo.
-echo Listing available volumes...
-echo.
-(
-echo list volume
-echo exit
-) > "%TEMP%\listvol.txt"
-diskpart /s "%TEMP%\listvol.txt"
-del "%TEMP%\listvol.txt" >nul 2>&1
-echo.
-set "VOLNUM="
-set /p "VOLNUM=Enter the USB Volume Number: "
-if not defined VOLNUM (
-    echo No volume selected.
-    pause
-    goto MENU
-)
-set "DRIVELETTER="
-set /p "DRIVELETTER=Enter the drive letter to assign (Example: E): "
-rem Accept "E:" as well as "E"
-if defined DRIVELETTER set "DRIVELETTER=%DRIVELETTER::=%"
-if not defined DRIVELETTER (
-    echo No drive letter entered.
-    pause
-    goto MENU
-)
-echo.
-echo Mounting volume %VOLNUM% as %DRIVELETTER%: ...
-echo.
-(
-echo select volume %VOLNUM%
-echo assign letter=%DRIVELETTER%
-echo exit
-) > "%TEMP%\mountusb.txt"
-diskpart /s "%TEMP%\mountusb.txt"
-set "MOUNTRESULT=%errorlevel%"
-del "%TEMP%\mountusb.txt" >nul 2>&1
-echo.
-if "%MOUNTRESULT%"=="0" (
-    echo =================================
-    echo          Mount Completed
-    echo =================================
-) else (
-    echo Mount FAILED.
-)
-pause
-goto MENU
-
-:CAPTURE
-cls
-echo =================================
-echo         FFU IMAGE CAPTURE
-echo =================================
-echo.
-set "SOURCEDISK="
-set /p "SOURCEDISK=Enter source PhysicalDrive number (example: 0): "
-if not defined SOURCEDISK (
-    echo No source disk entered.
-    pause
-    goto MENU
-)
-echo.
-echo Available drive letters:
-echo.
-fsutil fsinfo drives
-echo.
-set "USBDRIVE="
-set /p "USBDRIVE=Enter destination drive letter (example: D): "
-if defined USBDRIVE set "USBDRIVE=%USBDRIVE::=%"
-if not defined USBDRIVE (
-    echo No destination drive entered.
-    pause
-    goto MENU
-)
-echo.
-set "FFUNAME="
-set /p "FFUNAME=Enter FFU filename (example: Server2022.ffu): "
-if not defined FFUNAME (
-    echo No filename entered.
-    pause
-    goto MENU
-)
-echo.
-echo Capturing FFU...
-echo.
-dism /Capture-FFU ^
- /ImageFile:"%USBDRIVE%:\%FFUNAME%" ^
- /CaptureDrive:\\.\PhysicalDrive%SOURCEDISK% ^
- /Name:"CAPTURE"
-set "CAPTURERESULT=%errorlevel%"
-if "%CAPTURERESULT%"=="0" (
-    echo.
-    echo Capture completed successfully.
-) else (
-    echo.
-    echo Capture FAILED.
-)
-pause
-goto MENU
-
-:DEPLOY
-cls
-set "IMAGE="
-echo =================================
-echo        FFU DEPLOYMENT MENU
-echo =================================
-echo.
-echo 1 - EVS 6520 WS
-echo 2 - EVS 6521 WS
-echo 3 - EVS 6520 RR
-echo 4 - EVS 6520 EMS
-echo 5 - EVS 6521 EMS
-echo 6 - EVS 6520 DC
-echo 7 - Exit
-echo.
-set "choice="
-set /p "choice=Select an image (1-7): "
-if "%choice%"=="1" set "IMAGE=EVS6520WS.ffu"
-if "%choice%"=="2" set "IMAGE=EVS6521WS.ffu"
-if "%choice%"=="3" set "IMAGE=EVS6520RR.ffu"
-if "%choice%"=="4" set "IMAGE=EVS6520EMS.ffu"
-if "%choice%"=="5" set "IMAGE=EVS6521EMS.ffu"
-if "%choice%"=="6" set "IMAGE=EVS6520DC.ffu"
-if "%choice%"=="7" exit /b 0
-if not defined IMAGE (
-    echo Invalid selection.
-    pause
-    goto DEPLOY
-)
-echo.
-(
-echo list disk
-echo exit
-) > "%TEMP%\listdisk.txt"
-diskpart /s "%TEMP%\listdisk.txt"
-del "%TEMP%\listdisk.txt" >nul 2>&1
-echo.
-set "DISK="
-set /p "DISK=Enter target disk number: "
-if not defined DISK (
-    echo No disk selected.
-    pause
-    goto MENU
-)
-echo.
-echo Target Disk: Disk %DISK%
-echo.
-echo Available drive letters:
-echo.
-fsutil fsinfo drives
-echo.
-set "SOURCEDRIVE="
-set /p "SOURCEDRIVE=Enter Source Drive letter (example: F): "
-if defined SOURCEDRIVE set "SOURCEDRIVE=%SOURCEDRIVE::=%"
-if not defined SOURCEDRIVE (
-    echo No source drive entered.
-    pause
-    goto MENU
-)
-set "SELECTEDIMAGE=%SOURCEDRIVE%:\Images\%IMAGE%"
-echo.
-echo Selected image: %SELECTEDIMAGE%
-echo.
-echo WARNING!
-echo.
-echo This will erase ALL data on Disk %DISK%.
-echo.
-set "CONFIRM="
-set /p "CONFIRM=Type YES to continue or press Enter to cancel: "
-if /i not "%CONFIRM%"=="YES" (
-    echo Deployment cancelled.
-    pause
-    goto MENU
-)
-echo.
-echo Applying FFU Image...
-dism /Apply-FFU /ImageFile:"%SELECTEDIMAGE%" /ApplyDrive:\\.\PhysicalDrive%DISK%
-set "DEPLOYRESULT=%errorlevel%"
-if "%DEPLOYRESULT%"=="0" (
-    echo.
-    echo Deployment completed successfully.
-) else (
-    echo.
-    echo Deployment FAILED.
-)
-pause
-goto MENU
+:EMIT
+if defined MANUFACTURER echo MANUFACTURER=%MANUFACTURER%
+if defined MODEL echo MODEL=%MODEL%
+if defined SERIAL echo SERIAL=%SERIAL%
+if defined BIOSVER echo BIOSVER=%BIOSVER%
+if defined SERIAL (exit /b 0) else (exit /b 1)
 
 rem ------------------------------------------------------------------
-rem Writes the VBScript helper: WMI query with a fallback that parses
-rem the raw SMBIOS table from HKLM\SYSTEM\...\mssmbios\Data\SMBiosData
-rem (type 0 = BIOS version, type 1 = manufacturer/model/serial).
+rem VBScript helper: WMI query, then parse the raw SMBIOS table
+rem (structure type 0 = BIOS version, type 1 = manufacturer/model/serial)
 rem ------------------------------------------------------------------
 :WRITEVBS
 > "%~1" echo On Error Resume Next
@@ -364,8 +156,7 @@ rem ------------------------------------------------------------------
 exit /b 0
 
 rem ------------------------------------------------------------------
-rem Writes the PowerShell helper: CIM query with the same raw SMBIOS
-rem registry fallback.
+rem PowerShell helper: CIM query with the same raw SMBIOS fallback
 rem ------------------------------------------------------------------
 :WRITEPS1
 > "%~1" echo $ErrorActionPreference = 'SilentlyContinue'

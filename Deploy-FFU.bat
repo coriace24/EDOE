@@ -12,15 +12,33 @@ echo      ES^&S TS FFU DEPLOYMENT
 echo =================================
 echo.
 
-rem Hardware detection
+rem Hardware detection - DetectHardware.bat falls back through WMI, the
+rem raw SMBIOS table, wmic and the registry, so the service tag is read
+rem even on boot images without the WinPE-WMI component.
 
-for /f "usebackq delims=" %%A in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "(Get-CimInstance Win32_BIOS).SerialNumber"`) do set "SERIAL=%%A"
-for /f "usebackq delims=" %%A in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "(Get-CimInstance Win32_ComputerSystem).Model"`) do set "MODEL=%%A"
-for /f "usebackq delims=" %%A in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "(Get-CimInstance Win32_ComputerSystem).Manufacturer"`) do set "MANUFACTURER=%%A"
+set "SERIAL="
+set "MODEL="
+set "MANUFACTURER="
+
+set "DETECT=%~dp0DetectHardware.bat"
+if not exist "%DETECT%" set "DETECT=%DEPLOYROOT%\Scripts\DetectHardware.bat"
+
+if exist "%DETECT%" (
+    for /f "usebackq tokens=1,* delims==" %%A in (`call "%DETECT%"`) do set "%%A=%%B"
+) else (
+    echo WARNING: DetectHardware.bat not found - hardware identity unavailable.
+)
+
+if not defined MANUFACTURER set "MANUFACTURER=Unknown"
+if not defined MODEL set "MODEL=Unknown"
 
 echo Manufacturer : %MANUFACTURER%
 echo Model        : %MODEL%
-echo Serial       : %SERIAL%
+if defined SERIAL (
+    echo Serial       : %SERIAL%
+) else (
+    echo Serial       : Not available
+)
 echo.
 
 rem Detect disk (largest NVMe/SATA disk over 100GB)
@@ -78,7 +96,7 @@ if "%choice%"=="1" set "IMAGE=EVS6520.ffu"
 if "%choice%"=="2" set "IMAGE=EVS6521.ffu"
 if "%choice%"=="3" set "IMAGE=EVSEMS6520.ffu"
 if "%choice%"=="4" set "IMAGE=EVSDC6520.ffu"
-if "%choice%"=="5" exit
+if "%choice%"=="5" exit /b 0
 
 if not defined IMAGE goto MENU
 
@@ -100,7 +118,13 @@ if /i not "%CONFIRM%"=="YES" (
 
 rem Start logging
 
-set "LOGFILE=%DEPLOYROOT%\Logs\Deploy_%SERIAL%.log"
+rem Name the log after the service tag; fall back to the disk number so
+rem a missing serial cannot collapse every machine into one log file.
+set "LOGNAME=%SERIAL%"
+if not defined LOGNAME set "LOGNAME=UNKNOWN_Disk%DISKNUMBER%"
+set "LOGNAME=%LOGNAME: =_%"
+set "LOGFILE=%DEPLOYROOT%\Logs\Deploy_%LOGNAME%.log"
+if not defined SERIAL set "SERIAL=Not available"
 
 >>"%LOGFILE%" echo ==========================
 >>"%LOGFILE%" echo Deployment Started
